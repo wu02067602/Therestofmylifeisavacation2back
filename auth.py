@@ -227,7 +227,7 @@ class LoginManager:
         return {
             "accessToken": access_token,
             "username": user.account,
-            "userId": user.id,
+            "userId": user.user_id,
         }
 
     def logout(self, access_token: str) -> bool:
@@ -299,7 +299,7 @@ class LoginManager:
         """
         expires_at = datetime.now(tz=timezone.utc) + timedelta(hours=self._token_ttl_hours)
         payload = {
-            "sub": str(user.id),
+            "sub": str(user.user_id),
             "account": user.account,
             "cursorApiKey": user.cursor_api_key,
             "exp": expires_at,

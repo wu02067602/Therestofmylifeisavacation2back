@@ -20,7 +20,7 @@ class UserRecord:
     代表登入使用者的資料列。
 
     Args:
-        id (int): 使用者流水號
+        user_id (int): 使用者流水號
         account (str): 使用者帳號
         password (str): 雜湊後的密碼
         cursor_api_key (str): Cursor API Key
@@ -32,11 +32,17 @@ class UserRecord:
 
     Examples:
         >>> UserRecord(1, "demo", "hashed", "ck", "2023-01-01", "2023-01-02")
-        UserRecord(id=1, account='demo', password='hashed', cursor_api_key='ck', created_at='2023-01-01', updated_at='2023-01-02')
+        UserRecord(user_id=1, account='demo', password='hashed', cursor_api_key='ck', created_at='2023-01-01', updated_at='2023-01-02')
 
     Raises:
         None.
     """
+    user_id: int
+    account: str
+    password: str
+    cursor_api_key: str
+    created_at: str
+    updated_at: str
 
 
 class DatabaseError(RuntimeError):
@@ -343,7 +349,7 @@ class SQLiteDatabase(DatabaseGateway):
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS login_users (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         account TEXT NOT NULL UNIQUE,
                         password TEXT NOT NULL,
                         cursor_api_key TEXT NOT NULL UNIQUE,
@@ -368,7 +374,7 @@ class SQLiteDatabase(DatabaseGateway):
                     BEGIN
                         UPDATE login_users
                         SET updated_at = CURRENT_TIMESTAMP
-                        WHERE id = NEW.id;
+                        WHERE user_id = NEW.user_id;
                     END;
                     """
                 )
@@ -454,7 +460,7 @@ class SQLiteDatabase(DatabaseGateway):
             with self._connect() as conn:
                 cursor = conn.execute(
                     """
-                    SELECT id, account, password, cursor_api_key, created_at, updated_at
+                    SELECT user_id, account, password, cursor_api_key, created_at, updated_at
                     FROM login_users
                     WHERE account = ? AND password = ?;
                     """,
@@ -486,7 +492,7 @@ class SQLiteDatabase(DatabaseGateway):
             with self._connect() as conn:
                 cursor = conn.execute(
                     """
-                    SELECT id, account, password, cursor_api_key, created_at, updated_at
+                    SELECT user_id, account, password, cursor_api_key, created_at, updated_at
                     FROM login_users
                     WHERE cursor_api_key = ?;
                     """,
@@ -606,7 +612,7 @@ class SQLiteDatabase(DatabaseGateway):
         try:
             cursor = conn.execute(
                 """
-                SELECT id, account, password, cursor_api_key, created_at, updated_at
+                SELECT user_id, account, password, cursor_api_key, created_at, updated_at
                 FROM login_users
                 WHERE account = ?;
                 """,
@@ -637,7 +643,7 @@ class SQLiteDatabase(DatabaseGateway):
         if row is None:
             return None
         return UserRecord(
-            id=row["id"],
+            user_id=row["user_id"],
             account=row["account"],
             password=row["password"],
             cursor_api_key=row["cursor_api_key"],
