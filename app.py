@@ -36,7 +36,7 @@ app.add_middleware(
 )
 
 DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "/workspace/auth.db")
+SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./workspace/auth.db")
 
 db_kwargs: Dict[str, str] = {"db_path": SQLITE_DB_PATH} if DB_BACKEND == "sqlite" else {}
 database = create_database(DB_BACKEND, **db_kwargs)
