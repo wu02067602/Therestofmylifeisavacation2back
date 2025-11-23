@@ -112,7 +112,7 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
     try:
         login_manager.register_user(
             payload.account.strip(),
-            payload.password,
+            payload.password.strip(),
             payload.cursor_api_key.strip(),
         )
     except (AccountAlreadyExistsError, CursorKeyAlreadyExistsError, ValueError) as exc:
@@ -143,7 +143,7 @@ async def login(payload: LoginRequest) -> LoginResponse:
         HTTPException: 資料驗證或帳密錯誤時。
     """
     try:
-        result = login_manager.login(payload.account.strip(), payload.password)
+        result = login_manager.login(payload.account.strip(), payload.password.strip())
     except (InvalidCredentialsError, ValueError) as exc:
         logger.warning("登入失敗: %s", exc)
         raise HTTPException(
