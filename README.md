@@ -118,6 +118,117 @@ Host: localhost:8000
 - `502 Bad Gateway`：Cursor API 回應錯誤或逾時
 - `429 Too Many Requests`：Cursor API 告知超過速率限制（轉為 502 返回，可從日誌查看詳細原因）
 
+### 取得通用規則
+- 路徑：`GET /accounts/{account}/general-rule?repositoryUrl=...`
+- 說明：回傳指定帳號與儲存庫對應的通用規則文字與最後更新時間
+- 成功回應：`200 OK`
+
+請求範例：
+```http
+GET /accounts/demo-account/general-rule?repositoryUrl=https://github.com/your-org/your-repo HTTP/1.1
+Host: localhost:8000
+```
+
+成功回應：
+```json
+{
+  "account": "demo-account",
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "content": "請務必依照 SOLID 原則開發",
+  "lastUpdatedAt": "2025-01-01 10:30:00"
+}
+```
+
+常見錯誤：
+- `400 Bad Request`：`repositoryUrl` 為空或輸入格式錯誤
+- `404 Not Found`：帳號不存在
+
+### 更新通用規則
+- 路徑：`PUT /accounts/{account}/general-rule`
+- 說明：以覆寫方式更新指定帳號與儲存庫的通用規則
+- 成功回應：`200 OK`
+
+請求範例：
+```json
+{
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "content": "請務必依照 SOLID 原則開發"
+}
+```
+
+成功回應：
+```json
+{
+  "account": "demo-account",
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "content": "請務必依照 SOLID 原則開發",
+  "lastUpdatedAt": "2025-01-01 10:30:00"
+}
+```
+
+常見錯誤：
+- `400 Bad Request`：`repositoryUrl` 或 `content` 為空
+- `404 Not Found`：帳號不存在
+
+### 取得常用任務
+- 路徑：`GET /accounts/{account}/common-tasks?repositoryUrl=...`
+- 說明：取得指定帳號與儲存庫所儲存的常用任務清單
+- 成功回應：`200 OK`
+
+請求範例：
+```http
+GET /accounts/demo-account/common-tasks?repositoryUrl=https://github.com/your-org/your-repo HTTP/1.1
+Host: localhost:8000
+```
+
+成功回應：
+```json
+{
+  "account": "demo-account",
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "tasks": [
+    "同步最新 repositories 清單",
+    "檢查 README 是否更新"
+  ]
+}
+```
+
+常見錯誤：
+- `400 Bad Request`：`repositoryUrl` 為空
+- `404 Not Found`：帳號不存在
+
+### 更新常用任務
+- 路徑：`PUT /accounts/{account}/common-tasks`
+- 說明：以覆寫方式更新指定帳號與儲存庫的常用任務；未包含於請求中的任務會被刪除
+- 成功回應：`200 OK`
+
+請求範例：
+```json
+{
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "tasks": [
+    "同步最新 repositories 清單",
+    "檢查 README 是否更新"
+  ]
+}
+```
+
+成功回應：
+```json
+{
+  "account": "demo-account",
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "tasks": [
+    "同步最新 repositories 清單",
+    "檢查 README 是否更新"
+  ]
+}
+```
+
+常見錯誤：
+- `400 Bad Request`：`repositoryUrl` 為空、`tasks` 內含空字串或重複無法處理
+- `404 Not Found`：帳號不存在
+
 ## 環境變數
 
 | 變數 | 說明 | 預設值 |

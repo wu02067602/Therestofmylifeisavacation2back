@@ -9,7 +9,7 @@ import os
 from typing import Dict
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,9 @@ from auth import (
     InvalidCredentialsError,
     LoginManager,
 )
+from common_tasks import CommonTaskService
 from database import TokenAlreadyRevokedError, create_database
+from general_rules import GeneralRuleService
 from repositories import CursorRepositoryService, RepositoryFetchError
 
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +44,7 @@ SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./workspace/auth.db")
 db_kwargs: Dict[str, str] = {"db_path": SQLITE_DB_PATH} if DB_BACKEND == "sqlite" else {}
 database = create_database(DB_BACKEND, **db_kwargs)
 database.initialize()
+database.ensure_personalization_schema()
 
 CURSOR_API_BASE_URL = os.getenv("CURSOR_API_BASE_URL", "https://api.cursor.com")
 try:
@@ -68,6 +71,8 @@ repository_service = CursorRepositoryService(
     http_timeout=CURSOR_API_TIMEOUT_SECONDS,
     cache_ttl_minutes=REPOSITORY_CACHE_TTL_MINUTES,
 )
+general_rule_service = GeneralRuleService(database)
+common_task_service = CommonTaskService(database)
 
 
 class RegisterRequest(BaseModel):
@@ -127,6 +132,37 @@ class RepositoryListResponse(BaseModel):
     account: str
     lastSyncedAt: str | None
     repositories: list[RepositoryItem]
+
+
+class GeneralRuleResponse(BaseModel):
+    """取得或更新通用規則的回應模型。"""
+
+    account: str
+    repositoryUrl: str
+    content: str | None
+    lastUpdatedAt: str | None
+
+
+class GeneralRuleUpdateRequest(BaseModel):
+    """更新通用規則的請求模型。"""
+
+    repositoryUrl: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+
+
+class CommonTaskListResponse(BaseModel):
+    """取得或更新常用任務的回應模型。"""
+
+    account: str
+    repositoryUrl: str
+    tasks: list[str]
+
+
+class CommonTaskUpdateRequest(BaseModel):
+    """更新常用任務的請求模型。"""
+
+    repositoryUrl: str = Field(..., min_length=1)
+    tasks: list[str] = Field(default_factory=list)
 
 
 @app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -293,6 +329,225 @@ async def list_repositories(account: str) -> RepositoryListResponse:
         lastSyncedAt=last_synced_at,
         repositories=repositories,
     )
+
+
+@app.get("/accounts/{account}/general-rule", response_model=GeneralRuleResponse)
+async def get_general_rule(
+    account: str,
+    repositoryUrl: str = Query(..., min_length=1),
+) -> GeneralRuleResponse:
+    """
+    取得指定帳號與儲存庫的通用規則。
+
+    Args:
+        account (str): 使用者帳號
+        repositoryUrl (str): 儲存庫網址
+
+    Returns:
+        GeneralRuleResponse: 通用規則內容及最後更新時間
+
+    Examples:
+        >>> await get_general_rule("demo", "https://github.com/demo/repo")  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當參數為空或帳號不存在時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(repositoryUrl)
+    try:
+        record = general_rule_service.get_rule_record(normalized_account, normalized_repo)
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    content = record.content if record else None
+    last_updated = record.updated_at if record else None
+    return GeneralRuleResponse(
+        account=normalized_account,
+        repositoryUrl=normalized_repo,
+        content=content,
+        lastUpdatedAt=last_updated,
+    )
+
+
+@app.put("/accounts/{account}/general-rule", response_model=GeneralRuleResponse)
+async def upsert_general_rule(account: str, payload: GeneralRuleUpdateRequest) -> GeneralRuleResponse:
+    """
+    建立或更新指定帳號與儲存庫的通用規則。
+
+    Args:
+        account (str): 使用者帳號
+        payload (GeneralRuleUpdateRequest): 包含 repositoryUrl 與 content 的請求
+
+    Returns:
+        GeneralRuleResponse: 更新後的通用規則
+
+    Examples:
+        >>> await upsert_general_rule("demo", GeneralRuleUpdateRequest(repositoryUrl="https://github.com/demo/repo", content="rule"))  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當參數為空或帳號不存在時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(payload.repositoryUrl)
+    normalized_content = payload.content.strip()
+    if not normalized_content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="content 不可為空白",
+        )
+    try:
+        general_rule_service.update_rule(normalized_account, normalized_repo, normalized_content)
+        record = general_rule_service.get_rule_record(normalized_account, normalized_repo)
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    last_updated = record.updated_at if record else None
+    return GeneralRuleResponse(
+        account=normalized_account,
+        repositoryUrl=normalized_repo,
+        content=normalized_content,
+        lastUpdatedAt=last_updated,
+    )
+
+
+@app.get("/accounts/{account}/common-tasks", response_model=CommonTaskListResponse)
+async def get_common_tasks(
+    account: str,
+    repositoryUrl: str = Query(..., min_length=1),
+) -> CommonTaskListResponse:
+    """
+    取得指定帳號與儲存庫的常用任務清單。
+
+    Args:
+        account (str): 使用者帳號
+        repositoryUrl (str): 儲存庫網址
+
+    Returns:
+        CommonTaskListResponse: 常用任務內容
+
+    Examples:
+        >>> await get_common_tasks("demo", "https://github.com/demo/repo")  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當輸入不合法或帳號不存在時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(repositoryUrl)
+    try:
+        tasks = common_task_service.list_tasks(normalized_account, normalized_repo)
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    return CommonTaskListResponse(
+        account=normalized_account,
+        repositoryUrl=normalized_repo,
+        tasks=tasks,
+    )
+
+
+@app.put("/accounts/{account}/common-tasks", response_model=CommonTaskListResponse)
+async def upsert_common_tasks(
+    account: str,
+    payload: CommonTaskUpdateRequest,
+) -> CommonTaskListResponse:
+    """
+    覆寫指定帳號與儲存庫的常用任務。
+
+    Args:
+        account (str): 使用者帳號
+        payload (CommonTaskUpdateRequest): 包含 repositoryUrl 與 tasks 的請求
+
+    Returns:
+        CommonTaskListResponse: 更新後的常用任務清單
+
+    Examples:
+        >>> await upsert_common_tasks("demo", CommonTaskUpdateRequest(repositoryUrl="https://github.com/demo/repo", tasks=["task"]))  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當輸入不合法或帳號不存在時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(payload.repositoryUrl)
+    try:
+        tasks = common_task_service.replace_tasks(normalized_account, normalized_repo, payload.tasks)
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    return CommonTaskListResponse(
+        account=normalized_account,
+        repositoryUrl=normalized_repo,
+        tasks=tasks,
+    )
+
+
+def _normalize_account(account: str) -> str:
+    """
+    驗證並回傳去除前後空白的帳號字串。
+
+    Args:
+        account (str): 原始帳號輸入
+
+    Returns:
+        str: 去除空白後的帳號
+
+    Examples:
+        >>> _normalize_account(" demo ")
+        'demo'
+
+    Raises:
+        HTTPException: 當帳號為空時。
+    """
+    normalized = account.strip()
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="account 不可為空白",
+        )
+    return normalized
+
+
+def _normalize_repository_url(repository_url: str) -> str:
+    """
+    驗證並回傳去除前後空白的儲存庫網址。
+
+    Args:
+        repository_url (str): 原始儲存庫網址
+
+    Returns:
+        str: 去除空白後的網址
+
+    Examples:
+        >>> _normalize_repository_url(" https://github.com/demo/repo ")
+        'https://github.com/demo/repo'
+
+    Raises:
+        HTTPException: 當網址為空時。
+    """
+    normalized = repository_url.strip()
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="repositoryUrl 不可為空白",
+        )
+    return normalized
+
+
+def _http_error_from_value_error(exc: ValueError) -> HTTPException:
+    """
+    根據 ValueError 內容回傳對應的 HTTPException。
+
+    Args:
+        exc (ValueError): 原始錯誤
+
+    Returns:
+        HTTPException: 對應的 HTTP 錯誤
+
+    Examples:
+        >>> _http_error_from_value_error(ValueError("找不到指定帳號")).status_code
+        404
+
+    Raises:
+        None.
+    """
+    detail = str(exc) or "輸入資料不合法"
+    status_code = status.HTTP_404_NOT_FOUND if "找不到指定帳號" in detail else status.HTTP_400_BAD_REQUEST
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 if __name__ == "__main__":

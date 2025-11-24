@@ -103,6 +103,64 @@ class RepositoryPayload:
     repository_url: str
 
 
+@dataclass(frozen=True)
+class GeneralRuleRecord:
+    """
+    代表 general_rules 資料表中的資料列。
+
+    Args:
+        user_id (int): 對應 login_users 的 user_id
+        repository_url (str): 儲存庫網址
+        content (str): 通用規則內容
+        updated_at (str): 最後更新時間
+
+    Returns:
+        GeneralRuleRecord: 通用規則資料實體
+
+    Examples:
+        >>> GeneralRuleRecord(1, "https://github.com/demo/repo", "rule", "2025-01-01 00:00:00")
+        GeneralRuleRecord(user_id=1, repository_url='https://github.com/demo/repo', content='rule', updated_at='2025-01-01 00:00:00')
+
+    Raises:
+        None.
+    """
+
+    user_id: int
+    repository_url: str
+    content: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class CommonTaskRecord:
+    """
+    代表 common_tasks 資料表中的資料列。
+
+    Args:
+        task_id (int): 自動遞增的任務識別值
+        user_id (int): login_users.user_id
+        repository_url (str): 儲存庫網址
+        content (str): 任務內容
+        updated_at (str): 最後更新時間
+
+    Returns:
+        CommonTaskRecord: 常用任務資料實體
+
+    Examples:
+        >>> CommonTaskRecord(1, 2, "https://github.com/demo/repo", "task", "2025-01-01 00:00:00")
+        CommonTaskRecord(task_id=1, user_id=2, repository_url='https://github.com/demo/repo', content='task', updated_at='2025-01-01 00:00:00')
+
+    Raises:
+        None.
+    """
+
+    task_id: int
+    user_id: int
+    repository_url: str
+    content: str
+    updated_at: str
+
+
 class DatabaseError(RuntimeError):
     """
     所有資料庫相關錯誤的基底類別。
@@ -337,6 +395,24 @@ class DatabaseGateway(ABC):
         """
 
     @abstractmethod
+    def ensure_personalization_schema(self) -> None:
+        """
+        建立通用規則與常用任務相關資料表。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.ensure_personalization_schema()  # doctest: +SKIP
+
+        Raises:
+            DatabaseInitializationError: 建立資料表失敗時。
+        """
+
+    @abstractmethod
     def replace_repositories(
         self,
         cursor_api_key: str,
@@ -377,6 +453,106 @@ class DatabaseGateway(ABC):
         Raises:
             ValueError: 當 cursor_api_key 為空時。
             DatabaseError: 查詢資料庫失敗時。
+        """
+
+    @abstractmethod
+    def get_general_rule_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> Optional[GeneralRuleRecord]:
+        """
+        取得指定使用者與儲存庫對應的通用規則。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            Optional[GeneralRuleRecord]: 找到則回傳資料，否則 None
+
+        Examples:
+            >>> db.get_general_rule_by_user(1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當 user_id 或 repository_url 不合法時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+
+    @abstractmethod
+    def upsert_general_rule_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+        rule_content: str,
+    ) -> GeneralRuleRecord:
+        """
+        建立或更新指定使用者與儲存庫的通用規則。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+            rule_content (str): 通用規則內容
+
+        Returns:
+            GeneralRuleRecord: 實際寫入的資料列
+
+        Examples:
+            >>> db.upsert_general_rule_by_user(1, "https://github.com/demo/repo", "規則")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入為空時。
+            DatabaseError: 寫入資料庫失敗時。
+        """
+
+    @abstractmethod
+    def list_common_tasks_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> list[CommonTaskRecord]:
+        """
+        取得指定使用者與儲存庫的常用任務清單。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[CommonTaskRecord]: 常用任務資料列
+
+        Examples:
+            >>> db.list_common_tasks_by_user(1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+
+    @abstractmethod
+    def replace_common_tasks_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+        tasks: Sequence[str],
+    ) -> list[CommonTaskRecord]:
+        """
+        以覆蓋方式更新指定使用者與儲存庫的常用任務。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+            tasks (Sequence[str]): 需要寫入的任務內容
+
+        Returns:
+            list[CommonTaskRecord]: 更新後的所有常用任務
+
+        Examples:
+            >>> db.replace_common_tasks_by_user(1, "https://github.com/demo/repo", ["task"])  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入為空或 user_id 不合法時。
+            DatabaseError: 寫入資料庫失敗時。
         """
 
     @abstractmethod
@@ -515,6 +691,7 @@ class SQLiteDatabase(DatabaseGateway):
                     """
                 )
                 self._create_repository_table(conn)
+                self._create_personalization_tables(conn)
                 conn.commit()
         except sqlite3.Error as exc:
             logger.exception("初始化 SQLite 資料庫失敗: %s", exc)
@@ -543,6 +720,30 @@ class SQLiteDatabase(DatabaseGateway):
         except sqlite3.Error as exc:
             logger.exception("建立 repositories 資料表失敗: %s", exc)
             raise DatabaseInitializationError("建立 repositories 資料表失敗") from exc
+
+    def ensure_personalization_schema(self) -> None:
+        """
+        確保通用規則與常用任務資料表存在。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.ensure_personalization_schema()  # doctest: +SKIP
+
+        Raises:
+            DatabaseInitializationError: 建立資料表失敗時。
+        """
+        try:
+            with self._connect() as conn:
+                self._create_personalization_tables(conn)
+                conn.commit()
+        except sqlite3.Error as exc:
+            logger.exception("建立 personalization 資料表失敗: %s", exc)
+            raise DatabaseInitializationError("建立 personalization 資料表失敗") from exc
 
     def replace_repositories(
         self,
@@ -658,6 +859,172 @@ class SQLiteDatabase(DatabaseGateway):
         except sqlite3.Error as exc:
             logger.exception("查詢儲存庫時間失敗: key=%s exc=%s", cursor_api_key, exc)
             raise DatabaseError("查詢儲存庫時間失敗") from exc
+
+    def get_general_rule_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> Optional[GeneralRuleRecord]:
+        """
+        取得指定使用者與儲存庫的通用規則。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            Optional[GeneralRuleRecord]: 若存在則回傳資料，否則 None
+
+        Examples:
+            >>> db.get_general_rule_by_user(1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當 user_id 非正整數或 repository_url 為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        try:
+            with self._connect() as conn:
+                return self._fetch_general_rule(conn, user_id, normalized_url)
+        except sqlite3.Error as exc:
+            logger.exception("查詢通用規則失敗: user_id=%s exc=%s", user_id, exc)
+            raise DatabaseError("查詢 SQLite 通用規則失敗") from exc
+
+    def upsert_general_rule_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+        rule_content: str,
+    ) -> GeneralRuleRecord:
+        """
+        新增或更新通用規則。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+            rule_content (str): 通用規則內容
+
+        Returns:
+            GeneralRuleRecord: 更新後的資料列
+
+        Examples:
+            >>> db.upsert_general_rule_by_user(1, "https://github.com/demo/repo", "rule")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入為空時。
+            DatabaseError: 寫入資料庫失敗時。
+        """
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        normalized_rule = rule_content.strip()
+        if not normalized_rule:
+            raise ValueError("rule_content 不可為空白")
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO general_rules (user_id, repository_url, rule_content)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id, repository_url)
+                    DO UPDATE SET
+                        rule_content = excluded.rule_content,
+                        updated_at = CURRENT_TIMESTAMP;
+                    """,
+                    (user_id, normalized_url, normalized_rule),
+                )
+                conn.commit()
+                record = self._fetch_general_rule(conn, user_id, normalized_url)
+                if record is None:
+                    raise DatabaseError("無法取得剛更新的通用規則")
+                return record
+        except sqlite3.Error as exc:
+            logger.exception("寫入通用規則失敗: user_id=%s exc=%s", user_id, exc)
+            raise DatabaseError("寫入 SQLite 通用規則失敗") from exc
+
+    def list_common_tasks_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> list[CommonTaskRecord]:
+        """
+        取得指定使用者與儲存庫的常用任務清單。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[CommonTaskRecord]: 查詢結果
+
+        Examples:
+            >>> db.list_common_tasks_by_user(1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        try:
+            with self._connect() as conn:
+                return self._fetch_common_tasks(conn, user_id, normalized_url)
+        except sqlite3.Error as exc:
+            logger.exception("查詢常用任務失敗: user_id=%s exc=%s", user_id, exc)
+            raise DatabaseError("查詢 SQLite 常用任務失敗") from exc
+
+    def replace_common_tasks_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+        tasks: Sequence[str],
+    ) -> list[CommonTaskRecord]:
+        """
+        覆蓋指定使用者與儲存庫的常用任務。
+
+        Args:
+            user_id (int): login_users 的 user_id
+            repository_url (str): 儲存庫網址
+            tasks (Sequence[str]): 欲寫入的任務內容
+
+        Returns:
+            list[CommonTaskRecord]: 更新後的常用任務
+
+        Examples:
+            >>> db.replace_common_tasks_by_user(1, "https://github.com/demo/repo", ["task"])  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入為空時。
+            DatabaseError: 寫入資料庫失敗時。
+        """
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        normalized_tasks = self._prepare_task_contents(tasks)
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    DELETE FROM common_tasks
+                    WHERE user_id = ? AND repository_url = ?;
+                    """,
+                    (user_id, normalized_url),
+                )
+                for task in normalized_tasks:
+                    conn.execute(
+                        """
+                        INSERT INTO common_tasks (
+                            user_id,
+                            repository_url,
+                            task_content
+                        ) VALUES (?, ?, ?);
+                        """,
+                        (user_id, normalized_url, task),
+                    )
+                conn.commit()
+                return self._fetch_common_tasks(conn, user_id, normalized_url)
+        except sqlite3.Error as exc:
+            logger.exception("覆寫常用任務失敗: user_id=%s exc=%s", user_id, exc)
+            raise DatabaseError("覆寫 SQLite 常用任務失敗") from exc
 
     def create_user(self, account: str, password: str, cursor_api_key: str) -> UserRecord:
         """
@@ -1028,6 +1395,244 @@ class SQLiteDatabase(DatabaseGateway):
             created_at=row["created_at"],
         )
 
+    def _create_personalization_tables(self, conn: sqlite3.Connection) -> None:
+        """
+        建立通用規則與常用任務相關資料表。
+
+        Args:
+            conn (sqlite3.Connection): 既有 SQLite 連線
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db._create_personalization_tables(conn)  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 建表失敗時。
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS general_rules (
+                user_id INTEGER NOT NULL,
+                repository_url TEXT NOT NULL,
+                rule_content TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, repository_url),
+                FOREIGN KEY (user_id) REFERENCES login_users(user_id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS common_tasks (
+                task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                repository_url TEXT NOT NULL,
+                task_content TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES login_users(user_id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_common_tasks_user_repo
+            ON common_tasks(user_id, repository_url);
+            """
+        )
+
+    def _fetch_general_rule(
+        self,
+        conn: sqlite3.Connection,
+        user_id: int,
+        repository_url: str,
+    ) -> Optional[GeneralRuleRecord]:
+        """
+        於既有連線內查詢通用規則。
+
+        Args:
+            conn (sqlite3.Connection): SQLite 連線
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            Optional[GeneralRuleRecord]: 查詢結果
+
+        Examples:
+            >>> db._fetch_general_rule(conn, 1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 查詢失敗時。
+        """
+        cursor = conn.execute(
+            """
+            SELECT user_id, repository_url, rule_content, updated_at
+            FROM general_rules
+            WHERE user_id = ? AND repository_url = ?;
+            """,
+            (user_id, repository_url),
+        )
+        row = cursor.fetchone()
+        return self._row_to_general_rule(row) if row else None
+
+    def _row_to_general_rule(self, row: sqlite3.Row) -> GeneralRuleRecord:
+        """
+        將資料列轉換為 GeneralRuleRecord。
+
+        Args:
+            row (sqlite3.Row): SQLite 資料列
+
+        Returns:
+            GeneralRuleRecord: 對應的資料實體
+
+        Examples:
+            >>> db._row_to_general_rule(row)  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        return GeneralRuleRecord(
+            user_id=row["user_id"],
+            repository_url=row["repository_url"],
+            content=row["rule_content"],
+            updated_at=row["updated_at"],
+        )
+
+    def _fetch_common_tasks(
+        self,
+        conn: sqlite3.Connection,
+        user_id: int,
+        repository_url: str,
+    ) -> list[CommonTaskRecord]:
+        """
+        於既有連線內查詢常用任務。
+
+        Args:
+            conn (sqlite3.Connection): SQLite 連線
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[CommonTaskRecord]: 查詢結果
+
+        Examples:
+            >>> db._fetch_common_tasks(conn, 1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 查詢失敗時。
+        """
+        cursor = conn.execute(
+            """
+            SELECT task_id, user_id, repository_url, task_content, updated_at
+            FROM common_tasks
+            WHERE user_id = ? AND repository_url = ?
+            ORDER BY task_id ASC;
+            """,
+            (user_id, repository_url),
+        )
+        rows = cursor.fetchall()
+        return [self._row_to_common_task(row) for row in rows]
+
+    def _row_to_common_task(self, row: sqlite3.Row) -> CommonTaskRecord:
+        """
+        將資料列轉換為 CommonTaskRecord。
+
+        Args:
+            row (sqlite3.Row): SQLite 資料列
+
+        Returns:
+            CommonTaskRecord: 對應的資料實體
+
+        Examples:
+            >>> db._row_to_common_task(row)  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        return CommonTaskRecord(
+            task_id=row["task_id"],
+            user_id=row["user_id"],
+            repository_url=row["repository_url"],
+            content=row["task_content"],
+            updated_at=row["updated_at"],
+        )
+
+    def _normalize_repository_url(self, repository_url: str) -> str:
+        """
+        正規化儲存庫網址輸入。
+
+        Args:
+            repository_url (str): 原始輸入
+
+        Returns:
+            str: 去除前後空白的網址
+
+        Examples:
+            >>> db._normalize_repository_url(" https://github.com/demo/repo ")  # doctest: +SKIP
+            'https://github.com/demo/repo'
+
+        Raises:
+            ValueError: 當輸入為空時。
+        """
+        normalized = repository_url.strip()
+        if not normalized:
+            raise ValueError("repository_url 不可為空白")
+        return normalized
+
+    def _require_positive_user_id(self, user_id: int) -> None:
+        """
+        驗證 user_id 是否為正整數。
+
+        Args:
+            user_id (int): 欲驗證的使用者編號
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db._require_positive_user_id(1)
+
+        Raises:
+            ValueError: 當 user_id 小於等於 0 時。
+        """
+        if user_id <= 0:
+            raise ValueError("user_id 必須為正整數")
+
+    def _prepare_task_contents(self, tasks: Sequence[str]) -> list[str]:
+        """
+        驗證並正規化常用任務內容。
+
+        Args:
+            tasks (Sequence[str]): 任務內容序列
+
+        Returns:
+            list[str]: 經過去重與去空白的任務列表
+
+        Examples:
+            >>> db._prepare_task_contents([" task "])  # doctest: +SKIP
+            ['task']
+
+        Raises:
+            ValueError: 當序列為空、包含非字串或空白內容時。
+        """
+        if tasks is None:
+            raise ValueError("tasks 不可為 None")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for task in tasks:
+            if not isinstance(task, str):
+                raise ValueError("任務內容必須為字串")
+            trimmed = task.strip()
+            if not trimmed:
+                raise ValueError("任務內容不可為空白")
+            if trimmed not in seen:
+                seen.add(trimmed)
+                normalized.append(trimmed)
+        return normalized
+
 
 class BigQueryDatabase(DatabaseGateway):
     """
@@ -1211,6 +1816,24 @@ class BigQueryDatabase(DatabaseGateway):
         """
         raise NotImplementedError("BigQuery 實作尚未提供")
 
+    def ensure_personalization_schema(self) -> None:
+        """
+        建立通用規則與常用任務資料表（尚未實作）。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> BigQueryDatabase({}).ensure_personalization_schema()  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
     def replace_repositories(
         self,
         cursor_api_key: str,
@@ -1264,6 +1887,102 @@ class BigQueryDatabase(DatabaseGateway):
 
         Examples:
             >>> BigQueryDatabase({}).get_latest_repository_created_at("ck")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def get_general_rule_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> Optional[GeneralRuleRecord]:
+        """
+        取得通用規則（尚未實作）。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            Optional[GeneralRuleRecord]: 通用規則
+
+        Examples:
+            >>> BigQueryDatabase({}).get_general_rule_by_user(1, "url")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def upsert_general_rule_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+        rule_content: str,
+    ) -> GeneralRuleRecord:
+        """
+        新增或更新通用規則（尚未實作）。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            rule_content (str): 通用規則內容
+
+        Returns:
+            GeneralRuleRecord: 更新後資料
+
+        Examples:
+            >>> BigQueryDatabase({}).upsert_general_rule_by_user(1, "url", "rule")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def list_common_tasks_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> list[CommonTaskRecord]:
+        """
+        取得常用任務（尚未實作）。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[CommonTaskRecord]: 常用任務資料
+
+        Examples:
+            >>> BigQueryDatabase({}).list_common_tasks_by_user(1, "url")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def replace_common_tasks_by_user(
+        self,
+        user_id: int,
+        repository_url: str,
+        tasks: Sequence[str],
+    ) -> list[CommonTaskRecord]:
+        """
+        覆寫常用任務（尚未實作）。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            tasks (Sequence[str]): 任務內容
+
+        Returns:
+            list[CommonTaskRecord]: 更新後資料
+
+        Examples:
+            >>> BigQueryDatabase({}).replace_common_tasks_by_user(1, "url", ["task"])  # doctest: +SKIP
 
         Raises:
             NotImplementedError: 尚未支援。
