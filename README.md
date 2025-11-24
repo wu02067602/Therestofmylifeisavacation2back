@@ -229,6 +229,122 @@ Host: localhost:8000
 - `400 Bad Request`：`repositoryUrl` 為空、`tasks` 內含空字串或重複無法處理
 - `404 Not Found`：帳號不存在
 
+### 任務卡資料結構
+- `taskDescription` 是一個 JSON 陣列，每個元素必須包含 `type` 欄位，支援 `code_responsibility`、`modification`、`reading`、`custom`
+- `code_responsibility` 需要 `file_name`、`class_name`、`responsibility`，可選 `notes`
+- `modification` 與 `reading` 需要 `target` 與 `content`
+- `custom` 需要 `narrative`
+- `taskStatus` 僅允許 `ToDo`、`InProgress`、`Done`
+
+### 取得任務卡
+- 路徑：`GET /accounts/{account}/task-cards?repositoryUrl=...`
+- 說明：回傳指定帳號的任務卡列表。`repositoryUrl` 可省略，省略時回傳所有任務卡
+- 成功回應：
+
+```json
+{
+  "account": "demo-account",
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "taskCards": [
+    {
+      "cardId": 12,
+      "repositoryUrl": "https://github.com/your-org/your-repo",
+      "taskName": "規劃登入流程",
+      "taskDescription": [
+        {
+          "type": "code_responsibility",
+          "file_name": "auth.py",
+          "class_name": "LoginManager",
+          "responsibility": "驗證帳密",
+          "notes": "需確認 token TTL"
+        }
+      ],
+      "taskStatus": "InProgress",
+      "createdAt": "2025-01-01 10:00:00",
+      "updatedAt": "2025-01-01 11:00:00"
+    }
+  ]
+}
+```
+
+### 新增任務卡
+- 路徑：`POST /accounts/{account}/task-cards`
+- 說明：建立新的任務卡並立即透過 WebSocket 廣播
+- 成功回應：`201 Created`
+- 請求範例：
+
+```json
+{
+  "repositoryUrl": "https://github.com/your-org/your-repo",
+  "taskName": "建立任務卡 API",
+  "taskDescription": [
+    {
+      "type": "modification",
+      "target": "app.py",
+      "content": "新增 REST 與 WebSocket 端點"
+    },
+    {
+      "type": "reading",
+      "target": "Cursor API 文件",
+      "content": "確認儲存庫取得限制"
+    }
+  ],
+  "taskStatus": "ToDo"
+}
+```
+
+### 更新任務卡
+- 路徑：`PUT /accounts/{account}/task-cards/{card_id}`
+- 說明：可以選擇要更新的欄位，至少需提供一個欄位
+- 請求範例：
+
+```json
+{
+  "taskStatus": "Done",
+  "taskDescription": [
+    {
+      "type": "custom",
+      "narrative": "所有子任務均已完成"
+    }
+  ]
+}
+```
+
+- 成功回應：回傳更新後的整張任務卡
+- 常見錯誤：
+  - `400 Bad Request`：未提供任何欄位、描述格式錯誤
+  - `404 Not Found`：帳號或任務卡不存在
+
+### 刪除任務卡
+- 路徑：`DELETE /accounts/{account}/task-cards/{card_id}`
+- 說明：刪除指定任務卡，回傳 `{"success": true}`
+- 常見錯誤：
+  - `404 Not Found`：任務卡不存在
+
+### 任務卡 WebSocket
+- 路徑：`GET /ws/task-cards`（WebSocket）
+- 說明：伺服器會在任務卡新增、更新、刪除時廣播事件
+- 訊息格式：
+
+```json
+{
+  "event": "task_card.updated",
+  "account": "demo-account",
+  "card": {
+    "cardId": 12,
+    "repositoryUrl": "https://github.com/your-org/your-repo",
+    "taskName": "規劃登入流程",
+    "taskDescription": [],
+    "taskStatus": "InProgress",
+    "createdAt": "2025-01-01 10:00:00",
+    "updatedAt": "2025-01-01 11:05:00"
+  }
+}
+```
+
+- `event` 可能值：`task_card.created`、`task_card.updated`、`task_card.deleted`
+- `task_card.deleted` 僅保證提供 `cardId` 與 `repositoryUrl`
+
 ## 環境變數
 
 | 變數 | 說明 | 預設值 |
