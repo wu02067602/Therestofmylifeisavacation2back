@@ -9,7 +9,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,64 @@ class UserRecord:
     cursor_api_key: str
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class RepositoryRecord:
+    """
+    代表 repositories 資料表中的單一資料列。
+
+    Args:
+        repository_id (int): 自動遞增的主鍵
+        cursor_api_key (str): 對應的 Cursor API Key
+        repository_owner (str): GitHub 擁有者
+        repository_name (str): GitHub 儲存庫名稱
+        repository_url (str): 儲存庫完整網址
+        created_at (str): 建立時間戳
+
+    Returns:
+        RepositoryRecord: 儲存庫資料列的不可變實體
+
+    Examples:
+        >>> RepositoryRecord(1, "ck", "cursor", "repo", "https://github.com/cursor/repo", "2023-01-01 00:00:00")
+        RepositoryRecord(repository_id=1, cursor_api_key='ck', repository_owner='cursor', repository_name='repo', repository_url='https://github.com/cursor/repo', created_at='2023-01-01 00:00:00')
+
+    Raises:
+        None.
+    """
+
+    repository_id: int
+    cursor_api_key: str
+    repository_owner: str
+    repository_name: str
+    repository_url: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class RepositoryPayload:
+    """
+    代表欲寫入 repositories 資料表的輸入資料。
+
+    Args:
+        repository_owner (str): GitHub 擁有者
+        repository_name (str): 儲存庫名稱
+        repository_url (str): 儲存庫完整網址
+
+    Returns:
+        RepositoryPayload: 輸入資料的不可變實體
+
+    Examples:
+        >>> RepositoryPayload("cursor", "repo", "https://github.com/cursor/repo")
+        RepositoryPayload(repository_owner='cursor', repository_name='repo', repository_url='https://github.com/cursor/repo')
+
+    Raises:
+        None.
+    """
+
+    repository_owner: str
+    repository_name: str
+    repository_url: str
 
 
 class DatabaseError(RuntimeError):
@@ -260,7 +318,85 @@ class DatabaseGateway(ABC):
         Raises:
             DatabaseError: 查詢錯誤時。
         """
+    @abstractmethod
+    def ensure_repository_schema(self) -> None:
+        """
+        建立 repositories 資料表與必要索引。
 
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.ensure_repository_schema()  # doctest: +SKIP
+
+        Raises:
+            DatabaseInitializationError: 建立資料表失敗時。
+        """
+
+    @abstractmethod
+    def replace_repositories(
+        self,
+        cursor_api_key: str,
+        repositories: Sequence[RepositoryPayload],
+    ) -> list[RepositoryRecord]:
+        """
+        以覆蓋方式寫入指定 Cursor API Key 的儲存庫。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+            repositories (Sequence[RepositoryPayload]): 欲寫入的儲存庫清單
+
+        Returns:
+            list[RepositoryRecord]: 實際寫入後的資料列
+
+        Examples:
+            >>> db.replace_repositories("ck", [RepositoryPayload("cursor", "repo", "url")])  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當 cursor_api_key 為空時。
+            DatabaseError: 寫入資料庫失敗時。
+        """
+
+    @abstractmethod
+    def get_repositories(self, cursor_api_key: str) -> list[RepositoryRecord]:
+        """
+        取得指定 Cursor API Key 的儲存庫清單。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            list[RepositoryRecord]: 符合條件的儲存庫資料
+
+        Examples:
+            >>> db.get_repositories("ck")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當 cursor_api_key 為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+
+    @abstractmethod
+    def get_latest_repository_created_at(self, cursor_api_key: str) -> Optional[str]:
+        """
+        取得儲存庫資料的最新建立時間。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            Optional[str]: 若存在資料則回傳最新的 created_at 字串，否則 None
+
+        Examples:
+            >>> db.get_latest_repository_created_at("ck")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當 cursor_api_key 為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
 
 def create_database(backend: str, **kwargs) -> DatabaseGateway:
     """
@@ -378,10 +514,150 @@ class SQLiteDatabase(DatabaseGateway):
                     END;
                     """
                 )
+                self._create_repository_table(conn)
                 conn.commit()
         except sqlite3.Error as exc:
             logger.exception("初始化 SQLite 資料庫失敗: %s", exc)
             raise DatabaseInitializationError("初始化 SQLite 資料庫失敗") from exc
+
+    def ensure_repository_schema(self) -> None:
+        """
+        確保 repositories 資料表存在。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.ensure_repository_schema()  # doctest: +SKIP
+
+        Raises:
+            DatabaseInitializationError: 建表失敗時。
+        """
+        try:
+            with self._connect() as conn:
+                self._create_repository_table(conn)
+                conn.commit()
+        except sqlite3.Error as exc:
+            logger.exception("建立 repositories 資料表失敗: %s", exc)
+            raise DatabaseInitializationError("建立 repositories 資料表失敗") from exc
+
+    def replace_repositories(
+        self,
+        cursor_api_key: str,
+        repositories: Sequence[RepositoryPayload],
+    ) -> list[RepositoryRecord]:
+        """
+        以刪除後重建的方式覆蓋儲存庫資料。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+            repositories (Sequence[RepositoryPayload]): 欲寫入的儲存庫清單
+
+        Returns:
+            list[RepositoryRecord]: 寫入後的所有資料列
+
+        Examples:
+            >>> db.replace_repositories("ck", [RepositoryPayload("owner", "repo", "url")])  # doctest: +SKIP
+
+        Raises:
+            ValueError: cursor_api_key 為空時。
+            DatabaseError: 寫入資料庫失敗時。
+        """
+        if not cursor_api_key:
+            raise ValueError("cursor_api_key 不可為空")
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM repositories WHERE cursor_api_key = ?;",
+                    (cursor_api_key,),
+                )
+                for repo in repositories:
+                    conn.execute(
+                        """
+                        INSERT INTO repositories (
+                            cursor_api_key,
+                            repository_owner,
+                            repository_name,
+                            repository_url
+                        )
+                        VALUES (?, ?, ?, ?);
+                        """,
+                        (
+                            cursor_api_key,
+                            repo.repository_owner,
+                            repo.repository_name,
+                            repo.repository_url,
+                        ),
+                    )
+                conn.commit()
+                return self._fetch_repositories(conn, cursor_api_key)
+        except sqlite3.Error as exc:
+            logger.exception("覆寫儲存庫資料失敗: key=%s exc=%s", cursor_api_key, exc)
+            raise DatabaseError("覆寫儲存庫資料失敗") from exc
+
+    def get_repositories(self, cursor_api_key: str) -> list[RepositoryRecord]:
+        """
+        取得指定 Cursor API Key 的儲存庫清單。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            list[RepositoryRecord]: 所有儲存庫資料
+
+        Examples:
+            >>> db.get_repositories("ck")  # doctest: +SKIP
+
+        Raises:
+            ValueError: cursor_api_key 為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+        if not cursor_api_key:
+            raise ValueError("cursor_api_key 不可為空")
+        try:
+            with self._connect() as conn:
+                return self._fetch_repositories(conn, cursor_api_key)
+        except sqlite3.Error as exc:
+            logger.exception("查詢儲存庫資料失敗: key=%s exc=%s", cursor_api_key, exc)
+            raise DatabaseError("查詢儲存庫資料失敗") from exc
+
+    def get_latest_repository_created_at(self, cursor_api_key: str) -> Optional[str]:
+        """
+        取得儲存庫資料的最新建立時間。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            Optional[str]: 最新 created_at 字串，若無資料則為 None
+
+        Examples:
+            >>> db.get_latest_repository_created_at("ck")  # doctest: +SKIP
+
+        Raises:
+            ValueError: cursor_api_key 為空時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+        if not cursor_api_key:
+            raise ValueError("cursor_api_key 不可為空")
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT MAX(created_at) AS last_synced_at
+                    FROM repositories
+                    WHERE cursor_api_key = ?;
+                    """,
+                    (cursor_api_key,),
+                )
+                row = cursor.fetchone()
+                return row["last_synced_at"] if row and row["last_synced_at"] else None
+        except sqlite3.Error as exc:
+            logger.exception("查詢儲存庫時間失敗: key=%s exc=%s", cursor_api_key, exc)
+            raise DatabaseError("查詢儲存庫時間失敗") from exc
 
     def create_user(self, account: str, password: str, cursor_api_key: str) -> UserRecord:
         """
@@ -592,6 +868,82 @@ class SQLiteDatabase(DatabaseGateway):
             logger.exception("無法建立 SQLite 連線: %s", exc)
             raise DatabaseError("無法建立 SQLite 連線") from exc
 
+    def _create_repository_table(self, conn: sqlite3.Connection) -> None:
+        """
+        在既有連線上建立 repositories 資料表。
+
+        Args:
+            conn (sqlite3.Connection): 既有的 SQLite 連線
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db._create_repository_table(conn)  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 建表失敗時。
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS repositories (
+                repository_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cursor_api_key TEXT NOT NULL,
+                repository_owner TEXT NOT NULL,
+                repository_name TEXT NOT NULL,
+                repository_url TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cursor_api_key) REFERENCES login_users(cursor_api_key)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_repositories_cursor_api_key
+            ON repositories(cursor_api_key);
+            """
+        )
+
+    def _fetch_repositories(
+        self,
+        conn: sqlite3.Connection,
+        cursor_api_key: str,
+    ) -> list[RepositoryRecord]:
+        """
+        查詢 repositories 並轉換為 RepositoryRecord。
+
+        Args:
+            conn (sqlite3.Connection): 既有的 SQLite 連線
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            list[RepositoryRecord]: 查詢結果清單
+
+        Examples:
+            >>> db._fetch_repositories(conn, "ck")  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 查詢失敗時。
+        """
+        cursor = conn.execute(
+            """
+            SELECT
+                repository_id,
+                cursor_api_key,
+                repository_owner,
+                repository_name,
+                repository_url,
+                created_at
+            FROM repositories
+            WHERE cursor_api_key = ?
+            ORDER BY repository_owner, repository_name;
+            """,
+            (cursor_api_key,),
+        )
+        rows = cursor.fetchall()
+        return [self._row_to_repository(row) for row in rows]
+
     def _fetch_user_by_account(self, conn: sqlite3.Connection, account: str) -> Optional[UserRecord]:
         """
         以帳號查詢使用者（共用內部方法）。
@@ -649,6 +1001,31 @@ class SQLiteDatabase(DatabaseGateway):
             cursor_api_key=row["cursor_api_key"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    def _row_to_repository(self, row: sqlite3.Row) -> RepositoryRecord:
+        """
+        將 SQLite 資料列轉換為 RepositoryRecord。
+
+        Args:
+            row (sqlite3.Row): SQLite 資料列
+
+        Returns:
+            RepositoryRecord: 對應的資料實體
+
+        Examples:
+            >>> db._row_to_repository(row)  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        return RepositoryRecord(
+            repository_id=row["repository_id"],
+            cursor_api_key=row["cursor_api_key"],
+            repository_owner=row["repository_owner"],
+            repository_name=row["repository_name"],
+            repository_url=row["repository_url"],
+            created_at=row["created_at"],
         )
 
 
@@ -810,6 +1187,83 @@ class BigQueryDatabase(DatabaseGateway):
 
         Examples:
             >>> BigQueryDatabase({}).is_token_revoked("token")
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def ensure_repository_schema(self) -> None:
+        """
+        建立 repositories 資料表（尚未實作）。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> BigQueryDatabase({}).ensure_repository_schema()  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def replace_repositories(
+        self,
+        cursor_api_key: str,
+        repositories: Sequence[RepositoryPayload],
+    ) -> list[RepositoryRecord]:
+        """
+        覆寫儲存庫資料（尚未實作）。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+            repositories (Sequence[RepositoryPayload]): 儲存庫資料
+
+        Returns:
+            list[RepositoryRecord]: 實際寫入資料
+
+        Examples:
+            >>> BigQueryDatabase({}).replace_repositories("ck", [])  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def get_repositories(self, cursor_api_key: str) -> list[RepositoryRecord]:
+        """
+        取得儲存庫資料（尚未實作）。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            list[RepositoryRecord]: 儲存庫資料
+
+        Examples:
+            >>> BigQueryDatabase({}).get_repositories("ck")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def get_latest_repository_created_at(self, cursor_api_key: str) -> Optional[str]:
+        """
+        取得儲存庫最新建立時間（尚未實作）。
+
+        Args:
+            cursor_api_key (str): Cursor API Key
+
+        Returns:
+            Optional[str]: 最新 created_at
+
+        Examples:
+            >>> BigQueryDatabase({}).get_latest_repository_created_at("ck")  # doctest: +SKIP
 
         Raises:
             NotImplementedError: 尚未支援。

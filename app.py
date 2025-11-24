@@ -21,6 +21,7 @@ from auth import (
     LoginManager,
 )
 from database import TokenAlreadyRevokedError, create_database
+from repositories import CursorRepositoryService, RepositoryFetchError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,10 +43,31 @@ db_kwargs: Dict[str, str] = {"db_path": SQLITE_DB_PATH} if DB_BACKEND == "sqlite
 database = create_database(DB_BACKEND, **db_kwargs)
 database.initialize()
 
+CURSOR_API_BASE_URL = os.getenv("CURSOR_API_BASE_URL", "https://api.cursor.com")
+try:
+    CURSOR_API_TIMEOUT_SECONDS = float(os.getenv("CURSOR_API_TIMEOUT_SECONDS", "30"))
+except ValueError as exc:
+    raise ValueError("CURSOR_API_TIMEOUT_SECONDS 必須為數值") from exc
+if CURSOR_API_TIMEOUT_SECONDS <= 0:
+    raise ValueError("CURSOR_API_TIMEOUT_SECONDS 必須為正數")
+
+try:
+    REPOSITORY_CACHE_TTL_MINUTES = int(os.getenv("REPOSITORY_CACHE_TTL_MINUTES", "30"))
+except ValueError as exc:
+    raise ValueError("REPOSITORY_CACHE_TTL_MINUTES 必須為整數") from exc
+if REPOSITORY_CACHE_TTL_MINUTES <= 0:
+    raise ValueError("REPOSITORY_CACHE_TTL_MINUTES 必須為正整數")
+
 jwt_secret = os.getenv("JWT_SECRET", "cursor-dev-secret")
 jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
 token_ttl = int(os.getenv("TOKEN_TTL_HOURS", "24"))
 login_manager = LoginManager(database, jwt_secret, jwt_algorithm, token_ttl)
+repository_service = CursorRepositoryService(
+    database,
+    base_url=CURSOR_API_BASE_URL,
+    http_timeout=CURSOR_API_TIMEOUT_SECONDS,
+    cache_ttl_minutes=REPOSITORY_CACHE_TTL_MINUTES,
+)
 
 
 class RegisterRequest(BaseModel):
@@ -89,6 +111,22 @@ class LogoutResponse(BaseModel):
 
     success: bool
     message: str
+
+
+class RepositoryItem(BaseModel):
+    """單一儲存庫資訊。"""
+
+    owner: str
+    name: str
+    repository: str
+
+
+class RepositoryListResponse(BaseModel):
+    """取得儲存庫的回應模型。"""
+
+    account: str
+    lastSyncedAt: str | None
+    repositories: list[RepositoryItem]
 
 
 @app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -199,6 +237,62 @@ async def logout(payload: LogoutRequest) -> LogoutResponse:
         ) from exc
 
     return LogoutResponse(success=True, message="登出成功")
+
+
+@app.get("/accounts/{account}/repositories", response_model=RepositoryListResponse)
+async def list_repositories(account: str) -> RepositoryListResponse:
+    """
+    依帳號取得可訪問的 Git 儲存庫清單。
+
+    Args:
+        account (str): 需要查詢的登入帳號
+
+    Returns:
+        RepositoryListResponse: 包含儲存庫列表與最後同步時間
+
+    Examples:
+        >>> await list_repositories("demo-account")  # doctest: +SKIP
+        RepositoryListResponse(account='demo-account', lastSyncedAt='2024-01-01 00:00:00', repositories=[...])
+
+    Raises:
+        HTTPException: 當帳號不存在、輸入為空或遠端呼叫失敗時。
+    """
+    normalized_account = account.strip()
+    if not normalized_account:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="account 不可為空白",
+        )
+
+    user = database.get_user_by_account(normalized_account)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="找不到指定帳號",
+        )
+    try:
+        records = repository_service.get_repositories(user.cursor_api_key)
+    except RepositoryFetchError as exc:
+        logger.error("同步儲存庫失敗: account=%s error=%s", normalized_account, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="無法向 Cursor 取得儲存庫資料",
+        ) from exc
+
+    repositories = [
+        RepositoryItem(
+            owner=record.repository_owner,
+            name=record.repository_name,
+            repository=record.repository_url,
+        )
+        for record in records
+    ]
+    last_synced_at = database.get_latest_repository_created_at(user.cursor_api_key)
+    return RepositoryListResponse(
+        account=normalized_account,
+        lastSyncedAt=last_synced_at,
+        repositories=repositories,
+    )
 
 
 if __name__ == "__main__":
