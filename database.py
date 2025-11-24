@@ -161,6 +161,51 @@ class CommonTaskRecord:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class TaskCardRecord:
+    """
+    代表 task_cards 資料表的資料列。
+
+    Args:
+        card_id (int): 任務卡自動遞增識別碼
+        user_id (int): login_users.user_id
+        repository_url (str): 目標儲存庫網址
+        task_name (str): 任務卡顯示名稱
+        task_description (str): JSON 格式字串內容
+        task_status (str): 任務狀態（例如 ToDo、InProgress、Done）
+        created_at (str): 建立時間戳
+        updated_at (str): 最後更新時間戳
+
+    Returns:
+        TaskCardRecord: 任務卡資料列實體
+
+    Examples:
+        >>> TaskCardRecord(
+        ...     1,
+        ...     2,
+        ...     "https://github.com/demo/repo",
+        ...     "Implement feature X",
+        ...     "[]",
+        ...     "ToDo",
+        ...     "2025-01-01 00:00:00",
+        ...     "2025-01-01 00:00:00",
+        ... )
+        TaskCardRecord(card_id=1, user_id=2, repository_url='https://github.com/demo/repo', task_name='Implement feature X', task_description='[]', task_status='ToDo', created_at='2025-01-01 00:00:00', updated_at='2025-01-01 00:00:00')
+
+    Raises:
+        None.
+    """
+
+    card_id: int
+    user_id: int
+    repository_url: str
+    task_name: str
+    task_description: str
+    task_status: str
+    created_at: str
+    updated_at: str
+
+
 class DatabaseError(RuntimeError):
     """
     所有資料庫相關錯誤的基底類別。
@@ -413,6 +458,24 @@ class DatabaseGateway(ABC):
         """
 
     @abstractmethod
+    def ensure_task_card_schema(self) -> None:
+        """
+        建立 task_cards 資料表與索引。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.ensure_task_card_schema()  # doctest: +SKIP
+
+        Raises:
+            DatabaseInitializationError: 建表失敗時。
+        """
+
+    @abstractmethod
     def replace_repositories(
         self,
         cursor_api_key: str,
@@ -453,6 +516,118 @@ class DatabaseGateway(ABC):
         Raises:
             ValueError: 當 cursor_api_key 為空時。
             DatabaseError: 查詢資料庫失敗時。
+        """
+
+    @abstractmethod
+    def create_task_card(
+        self,
+        user_id: int,
+        repository_url: str,
+        task_name: str,
+        task_description: str,
+        task_status: str,
+    ) -> TaskCardRecord:
+        """
+        建立新的 task_card。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            task_name (str): 任務名稱
+            task_description (str): JSON 字串描述
+            task_status (str): 任務狀態
+
+        Returns:
+            TaskCardRecord: 實際寫入的任務卡資料
+
+        Examples:
+            >>> db.create_task_card(1, "https://github.com/demo/repo", "Task", "[]", "ToDo")  # doctest: +SKIP
+
+        Raises:
+            DatabaseError: 寫入資料庫失敗時。
+            ValueError: 輸入參數不合法時。
+        """
+
+    @abstractmethod
+    def list_task_cards(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> list[TaskCardRecord]:
+        """
+        取得指定使用者與儲存庫的所有 task_cards。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[TaskCardRecord]: 任務卡清單
+
+        Examples:
+            >>> db.list_task_cards(1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            DatabaseError: 查詢資料庫失敗時。
+            ValueError: 輸入參數不合法時。
+        """
+
+    @abstractmethod
+    def update_task_card(
+        self,
+        card_id: int,
+        user_id: int,
+        repository_url: str,
+        task_name: Optional[str] = None,
+        task_description: Optional[str] = None,
+        task_status: Optional[str] = None,
+    ) -> TaskCardRecord:
+        """
+        更新指定任務卡的內容。
+
+        Args:
+            card_id (int): 任務卡識別碼
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            task_name (Optional[str]): 新任務名稱
+            task_description (Optional[str]): 新任務描述 JSON 字串
+            task_status (Optional[str]): 新任務狀態
+
+        Returns:
+            TaskCardRecord: 更新後的任務卡資料
+
+        Examples:
+            >>> db.update_task_card(1, 1, "https://github.com/demo/repo", task_status="Done")  # doctest: +SKIP
+
+        Raises:
+            DatabaseError: 更新資料庫失敗時。
+            ValueError: 未提供可更新欄位或輸入不合法時。
+        """
+
+    @abstractmethod
+    def delete_task_card(
+        self,
+        card_id: int,
+        user_id: int,
+        repository_url: str,
+    ) -> None:
+        """
+        刪除指定任務卡。
+
+        Args:
+            card_id (int): 任務卡識別碼
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.delete_task_card(1, 1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            DatabaseError: 刪除資料時發生錯誤。
+            ValueError: 輸入參數不合法時。
         """
 
     @abstractmethod
@@ -692,6 +867,7 @@ class SQLiteDatabase(DatabaseGateway):
                 )
                 self._create_repository_table(conn)
                 self._create_personalization_tables(conn)
+                self._create_task_card_table(conn)
                 conn.commit()
         except sqlite3.Error as exc:
             logger.exception("初始化 SQLite 資料庫失敗: %s", exc)
@@ -744,6 +920,30 @@ class SQLiteDatabase(DatabaseGateway):
         except sqlite3.Error as exc:
             logger.exception("建立 personalization 資料表失敗: %s", exc)
             raise DatabaseInitializationError("建立 personalization 資料表失敗") from exc
+
+    def ensure_task_card_schema(self) -> None:
+        """
+        確保 task_cards 資料表存在。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.ensure_task_card_schema()  # doctest: +SKIP
+
+        Raises:
+            DatabaseInitializationError: 建表失敗時。
+        """
+        try:
+            with self._connect() as conn:
+                self._create_task_card_table(conn)
+                conn.commit()
+        except sqlite3.Error as exc:
+            logger.exception("建立 task_cards 資料表失敗: %s", exc)
+            raise DatabaseInitializationError("建立 task_cards 資料表失敗") from exc
 
     def replace_repositories(
         self,
@@ -859,6 +1059,218 @@ class SQLiteDatabase(DatabaseGateway):
         except sqlite3.Error as exc:
             logger.exception("查詢儲存庫時間失敗: key=%s exc=%s", cursor_api_key, exc)
             raise DatabaseError("查詢儲存庫時間失敗") from exc
+
+    def create_task_card(
+        self,
+        user_id: int,
+        repository_url: str,
+        task_name: str,
+        task_description: str,
+        task_status: str,
+    ) -> TaskCardRecord:
+        """
+        建立新的任務卡資料列。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            task_name (str): 任務名稱
+            task_description (str): JSON 格式描述字串
+            task_status (str): 任務狀態
+
+        Returns:
+            TaskCardRecord: 刚新增的任務卡資料
+
+        Examples:
+            >>> db.create_task_card(1, "https://github.com/demo/repo", "Task", "[]", "ToDo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入參數為空或不合法時。
+            DatabaseError: 建立資料列失敗時。
+        """
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        normalized_name = self._normalize_non_empty_text(task_name, "task_name")
+        normalized_description = self._normalize_non_empty_text(
+            task_description,
+            "task_description",
+        )
+        normalized_status = self._normalize_non_empty_text(task_status, "task_status")
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO task_cards (
+                        user_id,
+                        repository_url,
+                        task_name,
+                        task_description,
+                        task_status
+                    ) VALUES (?, ?, ?, ?, ?);
+                    """,
+                    (
+                        user_id,
+                        normalized_url,
+                        normalized_name,
+                        normalized_description,
+                        normalized_status,
+                    ),
+                )
+                conn.commit()
+                record = self._fetch_task_card_by_id(conn, cursor.lastrowid)
+                if record is None:
+                    raise DatabaseError("無法取得剛建立的任務卡資料")
+                return record
+        except sqlite3.Error as exc:
+            logger.exception("建立任務卡失敗: user_id=%s exc=%s", user_id, exc)
+            raise DatabaseError("建立 SQLite 任務卡失敗") from exc
+
+    def list_task_cards(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> list[TaskCardRecord]:
+        """
+        取得指定使用者與儲存庫的任務卡清單。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[TaskCardRecord]: 任務卡列表
+
+        Examples:
+            >>> db.list_task_cards(1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入參數為空或不合法時。
+            DatabaseError: 查詢資料庫失敗時。
+        """
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        try:
+            with self._connect() as conn:
+                return self._fetch_task_cards(conn, user_id, normalized_url)
+        except sqlite3.Error as exc:
+            logger.exception("查詢任務卡清單失敗: user_id=%s exc=%s", user_id, exc)
+            raise DatabaseError("查詢 SQLite 任務卡失敗") from exc
+
+    def update_task_card(
+        self,
+        card_id: int,
+        user_id: int,
+        repository_url: str,
+        task_name: Optional[str] = None,
+        task_description: Optional[str] = None,
+        task_status: Optional[str] = None,
+    ) -> TaskCardRecord:
+        """
+        更新指定任務卡的欄位。
+
+        Args:
+            card_id (int): 任務卡識別碼
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            task_name (Optional[str]): 新任務名稱
+            task_description (Optional[str]): 新任務描述 JSON 字串
+            task_status (Optional[str]): 新任務狀態
+
+        Returns:
+            TaskCardRecord: 更新後的任務卡資料
+
+        Examples:
+            >>> db.update_task_card(1, 1, "https://github.com/demo/repo", task_status="Done")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當 card_id 不合法或未指定更新欄位時。
+            DatabaseError: 更新資料庫失敗或找不到資料時。
+        """
+        if card_id <= 0:
+            raise ValueError("card_id 必須為正整數")
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        fields: list[str] = []
+        params: list[str] = []
+        if task_name is not None:
+            fields.append("task_name = ?")
+            params.append(self._normalize_non_empty_text(task_name, "task_name"))
+        if task_description is not None:
+            fields.append("task_description = ?")
+            params.append(
+                self._normalize_non_empty_text(task_description, "task_description")
+            )
+        if task_status is not None:
+            fields.append("task_status = ?")
+            params.append(self._normalize_non_empty_text(task_status, "task_status"))
+        if not fields:
+            raise ValueError("至少需提供一個可更新欄位")
+        set_clause = ", ".join(fields + ["updated_at = CURRENT_TIMESTAMP"])
+        params.extend([card_id, user_id, normalized_url])
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    f"""
+                    UPDATE task_cards
+                    SET {set_clause}
+                    WHERE card_id = ? AND user_id = ? AND repository_url = ?;
+                    """,
+                    params,
+                )
+                if cursor.rowcount == 0:
+                    raise DatabaseError("找不到符合條件的任務卡")
+                conn.commit()
+                record = self._fetch_task_card_by_id(conn, card_id)
+                if record is None:
+                    raise DatabaseError("無法取得更新後的任務卡資料")
+                return record
+        except sqlite3.Error as exc:
+            logger.exception("更新任務卡失敗: card_id=%s exc=%s", card_id, exc)
+            raise DatabaseError("更新 SQLite 任務卡失敗") from exc
+
+    def delete_task_card(
+        self,
+        card_id: int,
+        user_id: int,
+        repository_url: str,
+    ) -> None:
+        """
+        刪除指定任務卡。
+
+        Args:
+            card_id (int): 任務卡識別碼
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db.delete_task_card(1, 1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            ValueError: 當輸入參數不合法時。
+            DatabaseError: 刪除資料失敗或找不到資料時。
+        """
+        if card_id <= 0:
+            raise ValueError("card_id 必須為正整數")
+        self._require_positive_user_id(user_id)
+        normalized_url = self._normalize_repository_url(repository_url)
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM task_cards
+                    WHERE card_id = ? AND user_id = ? AND repository_url = ?;
+                    """,
+                    (card_id, user_id, normalized_url),
+                )
+                if cursor.rowcount == 0:
+                    raise DatabaseError("找不到符合條件的任務卡")
+                conn.commit()
+        except sqlite3.Error as exc:
+            logger.exception("刪除任務卡失敗: card_id=%s exc=%s", card_id, exc)
+            raise DatabaseError("刪除 SQLite 任務卡失敗") from exc
 
     def get_general_rule_by_user(
         self,
@@ -1444,6 +1856,167 @@ class SQLiteDatabase(DatabaseGateway):
             """
         )
 
+    def _create_task_card_table(self, conn: sqlite3.Connection) -> None:
+        """
+        建立 task_cards 資料表與索引。
+
+        Args:
+            conn (sqlite3.Connection): 既有 SQLite 連線
+
+        Returns:
+            None.
+
+        Examples:
+            >>> db._create_task_card_table(conn)  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 建表或建立索引失敗時。
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_cards (
+                card_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                repository_url TEXT NOT NULL,
+                task_name TEXT NOT NULL,
+                task_description TEXT NOT NULL,
+                task_status TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES login_users(user_id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_task_cards_user_repo
+            ON task_cards(user_id, repository_url);
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_task_cards_updated_at
+            AFTER UPDATE ON task_cards
+            FOR EACH ROW
+            BEGIN
+                UPDATE task_cards
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE card_id = NEW.card_id;
+            END;
+            """
+        )
+
+    def _fetch_task_cards(
+        self,
+        conn: sqlite3.Connection,
+        user_id: int,
+        repository_url: str,
+    ) -> list[TaskCardRecord]:
+        """
+        取得指定使用者與儲存庫的任務卡清單。
+
+        Args:
+            conn (sqlite3.Connection): 既有 SQLite 連線
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[TaskCardRecord]: 查詢結果列表
+
+        Examples:
+            >>> db._fetch_task_cards(conn, 1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 查詢資料庫失敗時。
+        """
+        cursor = conn.execute(
+            """
+            SELECT
+                card_id,
+                user_id,
+                repository_url,
+                task_name,
+                task_description,
+                task_status,
+                created_at,
+                updated_at
+            FROM task_cards
+            WHERE user_id = ? AND repository_url = ?
+            ORDER BY created_at ASC, card_id ASC;
+            """,
+            (user_id, repository_url),
+        )
+        rows = cursor.fetchall()
+        return [self._row_to_task_card(row) for row in rows]
+
+    def _fetch_task_card_by_id(
+        self,
+        conn: sqlite3.Connection,
+        card_id: int,
+    ) -> Optional[TaskCardRecord]:
+        """
+        依 card_id 查詢單一任務卡。
+
+        Args:
+            conn (sqlite3.Connection): 既有 SQLite 連線
+            card_id (int): 任務卡識別碼
+
+        Returns:
+            Optional[TaskCardRecord]: 查詢結果，找不到時為 None
+
+        Examples:
+            >>> db._fetch_task_card_by_id(conn, 1)  # doctest: +SKIP
+
+        Raises:
+            sqlite3.Error: 查詢資料庫失敗時。
+        """
+        cursor = conn.execute(
+            """
+            SELECT
+                card_id,
+                user_id,
+                repository_url,
+                task_name,
+                task_description,
+                task_status,
+                created_at,
+                updated_at
+            FROM task_cards
+            WHERE card_id = ?;
+            """,
+            (card_id,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_task_card(row) if row else None
+
+    def _row_to_task_card(self, row: sqlite3.Row) -> TaskCardRecord:
+        """
+        將 SQLite 資料列轉換成 TaskCardRecord。
+
+        Args:
+            row (sqlite3.Row): 已查詢的資料列
+
+        Returns:
+            TaskCardRecord: 轉換後的資料物件
+
+        Examples:
+            >>> db._row_to_task_card(row)  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        return TaskCardRecord(
+            card_id=row["card_id"],
+            user_id=row["user_id"],
+            repository_url=row["repository_url"],
+            task_name=row["task_name"],
+            task_description=row["task_description"],
+            task_status=row["task_status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     def _fetch_general_rule(
         self,
         conn: sqlite3.Connection,
@@ -1580,6 +2153,29 @@ class SQLiteDatabase(DatabaseGateway):
         normalized = repository_url.strip()
         if not normalized:
             raise ValueError("repository_url 不可為空白")
+        return normalized
+
+    def _normalize_non_empty_text(self, value: str, field_name: str) -> str:
+        """
+        驗證字串欄位不可為空白並回傳正規化結果。
+
+        Args:
+            value (str): 原始輸入值
+            field_name (str): 欄位名稱，用於錯誤訊息
+
+        Returns:
+            str: 去除前後空白後的字串
+
+        Examples:
+            >>> db._normalize_non_empty_text(" foo ", "task_name")  # doctest: +SKIP
+            'foo'
+
+        Raises:
+            ValueError: 當 value 去除空白後為空時。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{field_name} 不可為空白")
         return normalized
 
     def _require_positive_user_id(self, user_id: int) -> None:
@@ -1834,6 +2430,24 @@ class BigQueryDatabase(DatabaseGateway):
         """
         raise NotImplementedError("BigQuery 實作尚未提供")
 
+    def ensure_task_card_schema(self) -> None:
+        """
+        建立 task_cards 資料表（尚未實作）。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> BigQueryDatabase({}).ensure_task_card_schema()  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
     def replace_repositories(
         self,
         cursor_api_key: str,
@@ -1851,6 +2465,114 @@ class BigQueryDatabase(DatabaseGateway):
 
         Examples:
             >>> BigQueryDatabase({}).replace_repositories("ck", [])  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def create_task_card(
+        self,
+        user_id: int,
+        repository_url: str,
+        task_name: str,
+        task_description: str,
+        task_status: str,
+    ) -> TaskCardRecord:
+        """
+        建立任務卡（尚未實作）。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            task_name (str): 任務名稱
+            task_description (str): JSON 字串描述
+            task_status (str): 任務狀態
+
+        Returns:
+            TaskCardRecord: 任務卡資料
+
+        Examples:
+            >>> BigQueryDatabase({}).create_task_card(1, "url", "Task", "[]", "ToDo")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def list_task_cards(
+        self,
+        user_id: int,
+        repository_url: str,
+    ) -> list[TaskCardRecord]:
+        """
+        取得任務卡列表（尚未實作）。
+
+        Args:
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            list[TaskCardRecord]: 任務卡列表
+
+        Examples:
+            >>> BigQueryDatabase({}).list_task_cards(1, "url")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def update_task_card(
+        self,
+        card_id: int,
+        user_id: int,
+        repository_url: str,
+        task_name: Optional[str] = None,
+        task_description: Optional[str] = None,
+        task_status: Optional[str] = None,
+    ) -> TaskCardRecord:
+        """
+        更新任務卡（尚未實作）。
+
+        Args:
+            card_id (int): 任務卡識別碼
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+            task_name (Optional[str]): 新任務名稱
+            task_description (Optional[str]): 新任務描述
+            task_status (Optional[str]): 新任務狀態
+
+        Returns:
+            TaskCardRecord: 更新後的任務卡
+
+        Examples:
+            >>> BigQueryDatabase({}).update_task_card(1, 1, "url", task_status="Done")  # doctest: +SKIP
+
+        Raises:
+            NotImplementedError: 尚未支援。
+        """
+        raise NotImplementedError("BigQuery 實作尚未提供")
+
+    def delete_task_card(
+        self,
+        card_id: int,
+        user_id: int,
+        repository_url: str,
+    ) -> None:
+        """
+        刪除任務卡（尚未實作）。
+
+        Args:
+            card_id (int): 任務卡識別碼
+            user_id (int): login_users.user_id
+            repository_url (str): 儲存庫網址
+
+        Returns:
+            None.
+
+        Examples:
+            >>> BigQueryDatabase({}).delete_task_card(1, 1, "url")  # doctest: +SKIP
 
         Raises:
             NotImplementedError: 尚未支援。

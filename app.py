@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict
+import asyncio
+from typing import Any, Dict
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,7 @@ from common_tasks import CommonTaskService
 from database import TokenAlreadyRevokedError, create_database
 from general_rules import GeneralRuleService
 from repositories import CursorRepositoryService, RepositoryFetchError
+from task_card import TaskCardService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ db_kwargs: Dict[str, str] = {"db_path": SQLITE_DB_PATH} if DB_BACKEND == "sqlite
 database = create_database(DB_BACKEND, **db_kwargs)
 database.initialize()
 database.ensure_personalization_schema()
+database.ensure_task_card_schema()
 
 CURSOR_API_BASE_URL = os.getenv("CURSOR_API_BASE_URL", "https://api.cursor.com")
 try:
@@ -73,6 +76,7 @@ repository_service = CursorRepositoryService(
 )
 general_rule_service = GeneralRuleService(database)
 common_task_service = CommonTaskService(database)
+task_card_service = TaskCardService(database)
 
 
 class RegisterRequest(BaseModel):
@@ -163,6 +167,169 @@ class CommonTaskUpdateRequest(BaseModel):
 
     repositoryUrl: str = Field(..., min_length=1)
     tasks: list[str] = Field(default_factory=list)
+
+
+class TaskDescriptionEntryModel(BaseModel):
+    """任務描述中的單一項目模型。"""
+
+    type: str = Field(..., min_length=1)
+    file_name: str | None = None
+    class_name: str | None = None
+    responsibility: str | None = None
+    notes: str | None = None
+    target: str | None = None
+    content: str | None = None
+    narrative: str | None = None
+
+
+class TaskCardResponse(BaseModel):
+    """任務卡單筆回應模型。"""
+
+    cardId: int
+    userId: int
+    repositoryUrl: str
+    taskName: str
+    taskDescription: list[TaskDescriptionEntryModel]
+    taskStatus: str
+    createdAt: str
+    updatedAt: str
+
+
+class TaskCardListResponse(BaseModel):
+    """任務卡列表回應模型。"""
+
+    account: str
+    repositoryUrl: str
+    cards: list[TaskCardResponse]
+
+
+class TaskCardCreateRequest(BaseModel):
+    """建立任務卡的請求模型。"""
+
+    repositoryUrl: str = Field(..., min_length=1)
+    taskName: str = Field(..., min_length=1)
+    taskDescription: list[TaskDescriptionEntryModel] = Field(default_factory=list)
+    taskStatus: str = Field(..., min_length=1)
+
+
+class TaskCardUpdateRequest(BaseModel):
+    """更新任務卡的請求模型。"""
+
+    repositoryUrl: str = Field(..., min_length=1)
+    taskName: str | None = None
+    taskDescription: list[TaskDescriptionEntryModel] | None = None
+    taskStatus: str | None = None
+
+
+class TaskCardWebSocketManager:
+    """
+    管理任務卡通知用的 WebSocket 連線。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+
+    Examples:
+        >>> manager = TaskCardWebSocketManager()
+
+    Raises:
+        None.
+    """
+
+    def __init__(self) -> None:
+        """
+        初始化 WebSocket 連線管理器。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Examples:
+            >>> TaskCardWebSocketManager()
+
+        Raises:
+            None.
+        """
+        self._connections: dict[str, set[WebSocket]] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, repository_url: str, websocket: WebSocket) -> None:
+        """
+        接受新的 WebSocket 連線並加入管理列表。
+
+        Args:
+            repository_url (str): 使用者訂閱的儲存庫網址
+            websocket (WebSocket): FastAPI WebSocket 實例
+
+        Returns:
+            None.
+
+        Examples:
+            >>> await manager.connect("https://github.com/demo/repo", websocket)  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        await websocket.accept()
+        async with self._lock:
+            self._connections.setdefault(repository_url, set()).add(websocket)
+
+    async def disconnect(self, repository_url: str, websocket: WebSocket) -> None:
+        """
+        移除既有的 WebSocket 連線。
+
+        Args:
+            repository_url (str): 訂閱的儲存庫網址
+            websocket (WebSocket): FastAPI WebSocket 實例
+
+        Returns:
+            None.
+
+        Examples:
+            >>> await manager.disconnect("https://github.com/demo/repo", websocket)  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        async with self._lock:
+            connections = self._connections.get(repository_url)
+            if not connections:
+                return
+            connections.discard(websocket)
+            if not connections:
+                self._connections.pop(repository_url, None)
+
+    async def broadcast(self, repository_url: str, payload: dict[str, Any]) -> None:
+        """
+        將事件廣播給訂閱指定儲存庫的所有連線。
+
+        Args:
+            repository_url (str): 訂閱的儲存庫網址
+            payload (dict[str, Any]): 要廣播的事件資料
+
+        Returns:
+            None.
+
+        Examples:
+            >>> await manager.broadcast("https://github.com/demo/repo", {"event": "updated"})  # doctest: +SKIP
+
+        Raises:
+            None.
+        """
+        async with self._lock:
+            targets = list(self._connections.get(repository_url, set()))
+        for connection in targets:
+            try:
+                await connection.send_json(payload)
+            except (RuntimeError, WebSocketDisconnect):
+                await self.disconnect(repository_url, connection)
+
+
+task_card_socket_manager = TaskCardWebSocketManager()
 
 
 @app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -475,6 +642,281 @@ async def upsert_common_tasks(
         tasks=tasks,
     )
 
+
+@app.get("/accounts/{account}/task-cards", response_model=TaskCardListResponse)
+async def list_task_cards(
+    account: str,
+    repositoryUrl: str = Query(..., min_length=1),
+) -> TaskCardListResponse:
+    """
+    取得指定帳號與儲存庫的任務卡清單。
+
+    Args:
+        account (str): 使用者帳號
+        repositoryUrl (str): 儲存庫網址
+
+    Returns:
+        TaskCardListResponse: 任務卡資料列表
+
+    Examples:
+        >>> await list_task_cards("demo", "https://github.com/demo/repo")  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當輸入不合法或找不到使用者時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(repositoryUrl)
+    try:
+        cards = task_card_service.list_cards(normalized_account, normalized_repo)
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    response_cards = [_to_task_card_response(card) for card in cards]
+    return TaskCardListResponse(
+        account=normalized_account,
+        repositoryUrl=normalized_repo,
+        cards=response_cards,
+    )
+
+
+@app.post(
+    "/accounts/{account}/task-cards",
+    response_model=TaskCardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_task_card(account: str, payload: TaskCardCreateRequest) -> TaskCardResponse:
+    """
+    建立新的任務卡。
+
+    Args:
+        account (str): 使用者帳號
+        payload (TaskCardCreateRequest): 包含任務卡內容的請求
+
+    Returns:
+        TaskCardResponse: 新建立的任務卡
+
+    Examples:
+        >>> await create_task_card("demo", TaskCardCreateRequest(...))  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當輸入驗證失敗或找不到使用者時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(payload.repositoryUrl)
+    description_entries = _convert_description_models(payload.taskDescription)
+    try:
+        card = task_card_service.create_card(
+            normalized_account,
+            normalized_repo,
+            payload.taskName,
+            description_entries,
+            payload.taskStatus,
+        )
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    response_card = _to_task_card_response(card)
+    await _broadcast_task_card_event(normalized_repo, "task_card_created", response_card)
+    return response_card
+
+
+@app.put("/accounts/{account}/task-cards/{card_id}", response_model=TaskCardResponse)
+async def update_task_card(
+    account: str,
+    card_id: int,
+    payload: TaskCardUpdateRequest,
+) -> TaskCardResponse:
+    """
+    更新指定的任務卡。
+
+    Args:
+        account (str): 使用者帳號
+        card_id (int): 任務卡識別碼
+        payload (TaskCardUpdateRequest): 要更新的欄位
+
+    Returns:
+        TaskCardResponse: 更新後的任務卡
+
+    Examples:
+        >>> await update_task_card("demo", 1, TaskCardUpdateRequest(repositoryUrl="https://github.com/demo/repo", taskStatus="Done"))  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當輸入驗證失敗或找不到資料時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(payload.repositoryUrl)
+    description_entries = (
+        _convert_description_models(payload.taskDescription) if payload.taskDescription is not None else None
+    )
+    try:
+        card = task_card_service.update_card(
+            normalized_account,
+            normalized_repo,
+            card_id,
+            task_name=payload.taskName,
+            task_description=description_entries,
+            task_status=payload.taskStatus,
+        )
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    response_card = _to_task_card_response(card)
+    await _broadcast_task_card_event(normalized_repo, "task_card_updated", response_card)
+    return response_card
+
+
+@app.delete("/accounts/{account}/task-cards/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task_card(
+    account: str,
+    card_id: int,
+    repositoryUrl: str = Query(..., min_length=1),
+) -> None:
+    """
+    刪除指定任務卡。
+
+    Args:
+        account (str): 使用者帳號
+        card_id (int): 任務卡識別碼
+        repositoryUrl (str): 任務卡所屬儲存庫
+
+    Returns:
+        None.
+
+    Examples:
+        >>> await delete_task_card("demo", 1, "https://github.com/demo/repo")  # doctest: +SKIP
+
+    Raises:
+        HTTPException: 當輸入驗證失敗或任務卡不存在時。
+    """
+    normalized_account = _normalize_account(account)
+    normalized_repo = _normalize_repository_url(repositoryUrl)
+    try:
+        task_card_service.delete_card(normalized_account, normalized_repo, card_id)
+    except ValueError as exc:
+        raise _http_error_from_value_error(exc) from exc
+    await _broadcast_task_card_event(normalized_repo, "task_card_deleted", None, card_id=card_id)
+
+
+@app.websocket("/ws/task-cards")
+async def task_card_updates(websocket: WebSocket) -> None:
+    """
+    任務卡即時通知的 WebSocket 端點。
+
+    Args:
+        websocket (WebSocket): FastAPI 提供的 WebSocket 物件
+
+    Returns:
+        None.
+
+    Examples:
+        >>> await task_card_updates(websocket)  # doctest: +SKIP
+
+    Raises:
+        None.
+    """
+    repository_url = websocket.query_params.get("repositoryUrl", "")
+    try:
+        normalized_repo = _normalize_repository_url(repository_url)
+    except HTTPException as exc:
+        await websocket.close(code=1008, reason=exc.detail)
+        return
+    try:
+        await task_card_socket_manager.connect(normalized_repo, websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await task_card_socket_manager.disconnect(normalized_repo, websocket)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("WebSocket 發生錯誤: repo=%s error=%s", normalized_repo, exc)
+        await task_card_socket_manager.disconnect(normalized_repo, websocket)
+        await websocket.close(code=1011, reason="internal error")
+
+
+def _convert_description_models(entries: list[TaskDescriptionEntryModel]) -> list[dict[str, str]]:
+    """
+    將 Pydantic 模型轉換為任務卡服務可接受的字典列表。
+
+    Args:
+        entries (list[TaskDescriptionEntryModel]): 任務描述模型清單
+
+    Returns:
+        list[dict[str, str]]: 轉換後的字典清單
+
+    Examples:
+        >>> _convert_description_models([])  # doctest: +SKIP
+        []
+
+    Raises:
+        None.
+    """
+    return [entry.model_dump(exclude_none=True) for entry in entries]
+
+
+def _to_task_card_response(card: dict[str, Any]) -> TaskCardResponse:
+    """
+    將服務層回傳的任務卡字典轉換為回應模型。
+
+    Args:
+        card (dict[str, Any]): 任務卡資料字典
+
+    Returns:
+        TaskCardResponse: FastAPI 回應模型
+
+    Examples:
+        >>> _to_task_card_response({  # doctest: +SKIP
+        ...     "card_id": 1,
+        ...     "user_id": 2,
+        ...     "repository_url": "https://github.com/demo/repo",
+        ...     "task_name": "Task",
+        ...     "task_description": [],
+        ...     "task_status": "ToDo",
+        ...     "created_at": "now",
+        ...     "updated_at": "now",
+        ... })
+
+    Raises:
+        None.
+    """
+    return TaskCardResponse(
+        cardId=card["card_id"],
+        userId=card["user_id"],
+        repositoryUrl=card["repository_url"],
+        taskName=card["task_name"],
+        taskDescription=card["task_description"],
+        taskStatus=card["task_status"],
+        createdAt=card["created_at"],
+        updatedAt=card["updated_at"],
+    )
+
+
+async def _broadcast_task_card_event(
+    repository_url: str,
+    event: str,
+    card: TaskCardResponse | None,
+    card_id: int | None = None,
+) -> None:
+    """
+    透過 WebSocket 將任務卡事件廣播給所有連線。
+
+    Args:
+        repository_url (str): 任務卡所屬儲存庫
+        event (str): 事件識別，如 task_card_updated
+        card (TaskCardResponse | None): 任務卡資料
+        card_id (int | None): 任務卡識別碼
+
+    Returns:
+        None.
+
+    Examples:
+        >>> await _broadcast_task_card_event("https://github.com/demo/repo", "task_card_updated", None)  # doctest: +SKIP
+
+    Raises:
+        None.
+    """
+    payload = {
+        "event": event,
+        "repositoryUrl": repository_url,
+        "card": card.model_dump() if card else None,
+        "cardId": card.cardId if card else card_id,
+    }
+    await task_card_socket_manager.broadcast(repository_url, payload)
 
 def _normalize_account(account: str) -> str:
     """
