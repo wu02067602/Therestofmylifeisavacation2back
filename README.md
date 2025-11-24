@@ -81,6 +81,43 @@
 - `409 Conflict`：Token 已被註銷
 - `400 Bad Request`：Token 欄位缺漏
 
+### 取得帳號可用的 Git 儲存庫
+- 路徑：`GET /accounts/{account}/repositories`
+- 說明：輸入已註冊的 `account`，回傳該使用者的 Cursor API Key 能存取的 GitHub 儲存庫清單。若資料庫中最近一次同步未超過 30 分鐘，會直接回傳快取資料；超過時才呼叫 Cursor API（受 1 次/分鐘、30 次/小時的速率限制）。
+- 成功回應：`200 OK`
+
+請求範例：
+```http
+GET /accounts/demo-account/repositories HTTP/1.1
+Host: localhost:8000
+```
+
+成功回應：
+```json
+{
+  "account": "demo-account",
+  "lastSyncedAt": "2025-01-01 10:30:00",
+  "repositories": [
+    {
+      "owner": "your-org",
+      "name": "your-repo",
+      "repository": "https://github.com/your-org/your-repo"
+    },
+    {
+      "owner": "your-org",
+      "name": "another-repo",
+      "repository": "https://github.com/your-org/another-repo"
+    }
+  ]
+}
+```
+
+常見錯誤：
+- `400 Bad Request`：`account` 為空字串
+- `404 Not Found`：帳號不存在
+- `502 Bad Gateway`：Cursor API 回應錯誤或逾時
+- `429 Too Many Requests`：Cursor API 告知超過速率限制（轉為 502 返回，可從日誌查看詳細原因）
+
 ## 環境變數
 
 | 變數 | 說明 | 預設值 |
@@ -91,6 +128,9 @@
 | `JWT_ALGORITHM` | JWT 演算法 | `HS256` |
 | `TOKEN_TTL_HOURS` | Token 有效時間（小時） | `24` |
 | `CORS_ALLOW_ORIGINS` | 允許的 CORS 來源，逗號分隔 | `*` |
+| `CURSOR_API_BASE_URL` | Cursor API 根網址 | `https://api.cursor.com` |
+| `CURSOR_API_TIMEOUT_SECONDS` | 呼叫 Cursor API 的逾時秒數（需為正數） | `30` |
+| `REPOSITORY_CACHE_TTL_MINUTES` | 儲存庫快取的有效分鐘數（需為正整數） | `30` |
 
 ## 本地開發
 
