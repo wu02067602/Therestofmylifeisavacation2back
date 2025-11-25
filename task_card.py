@@ -461,6 +461,9 @@ class TaskCardService:
         elif description_type in ("modification", "reading"):
             normalized["target"] = self._require_non_empty_field(item, "target", index)
             normalized["content"] = self._require_non_empty_field(item, "content", index)
+            notes = item.get("notes")
+            if notes is not None:
+                normalized["notes"] = str(notes).strip()
         elif description_type == "custom":
             normalized["narrative"] = self._require_non_empty_field(item, "narrative", index)
         return normalized

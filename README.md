@@ -232,7 +232,7 @@ Host: localhost:8000
 ### 任務卡資料結構
 - `taskDescription` 是一個 JSON 陣列，每個元素必須包含 `type` 欄位，支援 `code_responsibility`、`modification`、`reading`、`custom`
 - `code_responsibility` 需要 `file_name`、`class_name`、`responsibility`，可選 `notes`
-- `modification` 與 `reading` 需要 `target` 與 `content`
+- `modification` 與 `reading` 需要 `target` 與 `content`，可選 `notes`
 - `custom` 需要 `narrative`
 - `taskStatus` 僅允許 `ToDo`、`InProgress`、`Done`
 
@@ -281,7 +281,8 @@ Host: localhost:8000
     {
       "type": "modification",
       "target": "app.py",
-      "content": "新增 REST 與 WebSocket 端點"
+      "content": "新增 REST 與 WebSocket 端點",
+      "notes": "需注意 CORS 設定"
     },
     {
       "type": "reading",
