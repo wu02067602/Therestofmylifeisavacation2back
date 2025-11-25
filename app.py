@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 
 from auth import (
     AccountAlreadyExistsError,
@@ -354,10 +355,8 @@ class TaskCardWebSocketManager:
         for websocket in targets:
             try:
                 await websocket.send_json(message)
-            except WebSocketDisconnect:
-                await self.disconnect(websocket)
-            except RuntimeError:
-                logger.exception("推送任務卡事件失敗，移除連線")
+            except (WebSocketDisconnect, RuntimeError, ConnectionClosedOK, ConnectionClosedError) as e:
+                logger.debug(f"WebSocket 連接已關閉，移除連線: {type(e).__name__}")
                 await self.disconnect(websocket)
 
 
