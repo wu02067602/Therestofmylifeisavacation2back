@@ -213,7 +213,7 @@ class CursorRepositoryService:
         repositories_raw = payload.get("repositories")
         if repositories_raw is None:
             raise RepositoryFetchError("Cursor API 回傳缺少 repositories 欄位")
-        if not isinstance(repositories_raw, Sequence):
+        if not isinstance(repositories_raw, Sequence) or isinstance(repositories_raw, (str, bytes)):
             raise RepositoryFetchError("Cursor API repositories 欄位格式錯誤")
 
         parsed: list[RepositoryPayload] = []
